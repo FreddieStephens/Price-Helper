@@ -9,11 +9,15 @@ from flask import Flask, request, jsonify
 from shutil import copyfile
 
 # -----------------------
-# Logging setup
+# Logging setup (store logs OUTSIDE SharePoint so sync never blocks)
 # -----------------------
+log_path = os.path.join(
+    os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+    "sheet_helper.log"
+)
 logging.basicConfig(
-    filename="sheet_helper.log",
-    level=logging.DEBUG,   # set DEBUG to capture extra Explorer window logs
+    filename=log_path,
+    level=logging.DEBUG,
     format="%(asctime)s %(levelname)s %(message)s"
 )
 logger = logging.getLogger(__name__)
@@ -52,11 +56,6 @@ def open_file(path):
         logger.error(f"Failed to open {path}: {e}")
 
 def open_folder(folder):
-    """
-    Focus an existing Explorer window for the project folder if already open,
-    otherwise open a new one. Compares only the last folder name (e.g. 'QP 12345'),
-    so it works across different user profile base paths.
-    """
     try:
         pythoncom.CoInitialize()
         shell = win32com.client.Dispatch("Shell.Application")
@@ -68,13 +67,9 @@ def open_folder(folder):
         for window in shell.Windows():
             try:
                 if window.LocationURL:
-                    logger.debug(f"Raw LocationURL: {window.LocationURL}")
-
                     url = window.LocationURL.replace("file:///", "")
                     path = urllib.parse.unquote(url).replace("/", "\\")
                     current_name = os.path.basename(os.path.normpath(path)).lower()
-
-                    logger.debug(f"Resolved Explorer window path: {path} (name: {current_name})")
 
                     if current_name == target_name:
                         try:
@@ -98,6 +93,34 @@ def open_folder(folder):
         logger.error(f"Failed to open folder {folder}: {e}")
     finally:
         pythoncom.CoUninitialize()
+
+def force_onedrive_sync(path):
+    """
+    Trigger OneDrive to upload the given file immediately.
+    """
+    try:
+        onedrive_exe = os.path.expandvars(r"%localappdata%\Microsoft\OneDrive\onedrive.exe")
+        if os.path.exists(onedrive_exe):
+            subprocess.Popen([onedrive_exe, "/triggerupload", path])
+            logger.info(f"Triggered OneDrive sync for {path}")
+        else:
+            logger.warning("OneDrive executable not found, could not trigger sync")
+    except Exception as e:
+        logger.error(f"Failed to trigger OneDrive sync: {e}")
+
+def kill_stray_processes():
+    """
+    Kill any leftover Excel or Python processes to avoid file locks.
+    """
+    for proc in psutil.process_iter(attrs=['pid', 'name']):
+        try:
+            name = proc.info['name']
+            if name:
+                if "EXCEL.EXE" in name.upper():
+                    proc.kill()
+                    logger.info(f"Killed stray Excel process (PID {proc.info['pid']})")
+        except Exception:
+            continue
 
 def update_excel_fields(path, oppid, title, miles, close, owner):
     """
@@ -140,6 +163,10 @@ def update_excel_fields(path, oppid, title, miles, close, owner):
         wb.Close(SaveChanges=True)
         excel.Quit()
         logger.info(f"Successfully updated and saved Excel file {path}")
+
+        # ✅ Force upload and cleanup
+        force_onedrive_sync(path)
+        kill_stray_processes()
 
     except Exception as e:
         logger.error(f"Failed updating Excel via COM: {e}", exc_info=True)
