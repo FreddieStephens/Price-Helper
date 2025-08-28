@@ -1,0 +1,36 @@
+public with sharing class SheetHelperService {
+
+    @AuraEnabled
+    public static String callHelper(Id oppId, String actionType) {
+        Opportunity opp = [
+            SELECT Id,
+                   Account_Project_ID__c,
+                   Full_Project_Title__c,
+                   Miles__c,
+                   CloseDate,
+                   Opportunity_Owner__c
+            FROM Opportunity
+            WHERE Id = :oppId
+            LIMIT 1
+        ];
+
+        Map<String, Object> payload = new Map<String, Object>();
+        payload.put('proj_id', opp.Account_Project_ID__c);
+        payload.put('oppid', opp.Id);
+        payload.put('title', opp.Full_Project_Title__c);
+        payload.put('miles', opp.Miles__c);
+        payload.put('close', opp.CloseDate != null ? String.valueOf(opp.CloseDate) : null);
+        payload.put('owner', opp.Opportunity_Owner__c);
+
+        HttpRequest req = new HttpRequest();
+        req.setEndpoint('https://pricebook.fritzcloudflare.uk/run_' + actionType);
+        req.setMethod('POST');
+        req.setHeader('Content-Type', 'application/json');
+        req.setBody(JSON.serialize(payload));
+
+        Http http = new Http();
+        HttpResponse res = http.send(req);
+
+        return res.getBody();
+    }
+}
